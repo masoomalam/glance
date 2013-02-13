@@ -436,19 +436,23 @@ class Controller(controller.BaseController):
                 utils.CooperativeReader(image_data),
                 image_meta['size'])
 
-            # Verify any supplied checksum value matches checksum
+            def _kill_mismatched(image_meta, attr, actual):
+                supplied = image_meta.get(attr)
+                if supplied and supplied != actual:
+                    msg = _("Supplied %(attr)s (%(supplied)s) and "
+                            "%(attr)s generated from uploaded image "
+                            "(%(actual)s) did not match. Setting image "
+                            "status to 'killed'.") % locals()
+                    LOG.error(msg)
+                    self._safe_kill(req, image_id)
+                    raise HTTPBadRequest(explanation=msg,
+                                         content_type="text/plain",
+                                         request=req)
+
+            # Verify any supplied size/checksum value matches size/checksum
             # returned from store when adding image
-            supplied_checksum = image_meta.get('checksum')
-            if supplied_checksum and supplied_checksum != checksum:
-                msg = _("Supplied checksum (%(supplied_checksum)s) and "
-                       "checksum generated from uploaded image "
-                       "(%(checksum)s) did not match. Setting image "
-                       "status to 'killed'.") % locals()
-                LOG.error(msg)
-                self._safe_kill(req, image_id)
-                raise HTTPBadRequest(explanation=msg,
-                                     content_type="text/plain",
-                                     request=req)
+            _kill_mismatched(image_meta, 'size', size)
+            _kill_mismatched(image_meta, 'checksum', checksum)
 
             # Update the database with the checksum returned
             # from the backend store
@@ -714,6 +718,14 @@ class Controller(controller.BaseController):
         orig_image_meta = self.get_image_meta_or_404(req, id)
         orig_status = orig_image_meta['status']
 
+        # Do not allow any updates on a deleted image.
+        # Fix for LP Bug #1060930
+        if orig_status == 'deleted':
+            msg = _("Forbidden to update deleted image.")
+            raise HTTPForbidden(explanation=msg,
+                                request=req,
+                                content_type="text/plain")
+
         # The default behaviour for a PUT /images/<IMAGE_ID> is to
         # override any properties that were previously set. This, however,
         # leads to a number of issues for the common use case where a caller
@@ -821,22 +833,34 @@ class Controller(controller.BaseController):
                                 request=req,
                                 content_type="text/plain")
 
-        status = 'deleted'
+        if image['status'] == 'deleted':
+            msg = _("Forbidden to delete a deleted image.")
+            LOG.debug(msg)
+            raise HTTPForbidden(explanation=msg, request=req,
+                                content_type="text/plain")
+
+        if image['location'] and CONF.delayed_delete:
+            status = 'pending_delete'
+        else:
+            status = 'deleted'
+
         try:
+            # Delete the image from the registry first, since we rely on it
+            # for authorization checks.
+            # See https://bugs.launchpad.net/glance/+bug/1065187
+            registry.update_image_metadata(req.context, id, {'status': status})
+            registry.delete_image_metadata(req.context, id)
+
             # The image's location field may be None in the case
             # of a saving or queued image, therefore don't ask a backend
             # to delete the image if the backend doesn't yet store it.
             # See https://bugs.launchpad.net/glance/+bug/747799
             if image['location']:
                 if CONF.delayed_delete:
-                    status = 'pending_delete'
                     schedule_delayed_delete_from_backend(image['location'], id)
                 else:
                     safe_delete_from_backend(image['location'],
                                              req.context, id)
-
-            registry.update_image_metadata(req.context, id, {'status': status})
-            registry.delete_image_metadata(req.context, id)
         except exception.NotFound, e:
             msg = ("Failed to find image to delete: %(e)s" % locals())
             for line in msg.split('\n'):
