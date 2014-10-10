@@ -47,6 +47,8 @@ DEFAULT_USER = None    # let librados decide based on the Ceph conf file
 DEFAULT_CHUNKSIZE = 4  # in MiB
 DEFAULT_SNAPNAME = 'snap'
 
+DELETION_MARKER = '_to_be_deleted_by_glance'
+
 LOG = logging.getLogger(__name__)
 
 rbd_opts = [
@@ -256,12 +258,35 @@ class Store(glance.store.base.Store):
             librbd.create(ioctx, image_name, size, order, old_format=True)
             return StoreLocation({'image': image_name})
 
-    def _delete_image(self, target_pool, image_name, snapshot_name=None):
+    def _cleanup_parent(self, parent_pool, parent_name, parent_snap):
+        """Delete the snapshot and, if it's no longer used, the image
+        specified, and continue recursively.
         """
-        Delete RBD image and snapshot.
+        if DELETION_MARKER not in parent_snap:
+            return
+        try:
+            self._cleanup_image(parent_pool,
+                                parent_name,
+                                parent_snap,
+                                delete_image=DELETION_MARKER in parent_name)
+        except rbd.ImageHasSnapshots:
+            # parent image has other snapshots and will
+            # be deleted when they are deleted.
+            # This image has been deleted though, so
+            # ignore the exception
+            log_msg = _("parent image %(image)s@%(snap)s has other snapshots")
+            LOG.debug(log_msg % {'image': parent_name,
+                                 'snap': parent_snap})
 
+    def _cleanup_image(self, target_pool, image_name,
+                       snapshot_name=None, delete_image=True):
+        """Delete RBD snapshot and optionally image. Clean up any parent
+        snapshots and images if they are no longer used as well.
+
+        :param target_pool Pool in which the image is stored
         :param image_name Image's name
         :param snapshot_name Image snapshot's name
+        :param delete_image Whether to delete the image or only the snapshot
 
         :raises NotFound if image does not exist;
                 InUseByStore if image is in use or snapshot unprotect failed
@@ -270,6 +295,7 @@ class Store(glance.store.base.Store):
             with conn.open_ioctx(target_pool) as ioctx:
                 try:
                     # First remove snapshot.
+                    parent_name = None
                     if snapshot_name is not None:
                         with rbd.Image(ioctx, image_name) as image:
                             try:
@@ -283,12 +309,20 @@ class Store(glance.store.base.Store):
                                            'snap': snapshot_name})
                                 raise exception.InUseByStore()
                             image.remove_snap(snapshot_name)
+                            parent_pool, parent_name, parent_snap = \
+                                image.parent_info()
 
                     # Then delete image.
-                    rbd.RBD().remove(ioctx, image_name)
+                    if delete_image:
+                        rbd.RBD().remove(ioctx, image_name)
+                        if parent_name is not None:
+                            self._cleanup_parent(parent_pool,
+                                                 parent_name,
+                                                 parent_snap)
                 except rbd.ImageNotFound:
-                    raise exception.NotFound(
-                        _("RBD image %s does not exist") % image_name)
+                    raise exception.NotFound(message=
+                                              _("RBD image %s does not exist")
+                                              % image_name)
                 except rbd.ImageBusy:
                     log_msg = _("image %s could not be removed "
                                 "because it is in use")
@@ -356,7 +390,7 @@ class Store(glance.store.base.Store):
                 except Exception as exc:
                     # Delete image if one was created
                     try:
-                        self._delete_image(loc.pool, loc.image, loc.snapshot)
+                        self._cleanup_image(loc.pool, loc.image, loc.snapshot)
                     except exception.NotFound:
                         pass
 
@@ -377,4 +411,8 @@ class Store(glance.store.base.Store):
         """
         loc = location.store_location
         target_pool = loc.pool or self.pool
-        self._delete_image(target_pool, loc.image, loc.snapshot)
+        try:
+            self._cleanup_image(target_pool, loc.image, loc.snapshot)
+        except:
+            LOG.debug('_cleanup_image() failed', exc_info=True)
+            raise
