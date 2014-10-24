@@ -94,7 +94,8 @@ def upload_data_to_store(req, image_meta, image_data, store, notifier):
             image_data = utils.LimitingReader(image_data, remaining)
 
         if CONF.convert_image_to_raw and \
-                image_meta.get('container_format', 'bare') == 'bare':
+                image_meta.get('container_format', 'bare') == 'bare' and \
+                image_meta.get('disk_format', 'raw') != 'raw':
             image_data, new_size = glance.convertor.convert(
                 utils.CooperativeReader(image_data))
             image_meta['size'] = new_size
