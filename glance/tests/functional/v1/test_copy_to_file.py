@@ -248,9 +248,9 @@ class TestCopyToFile(functional.FunctionalTest):
         path = "http://%s:%d/v1/images" % ("127.0.0.1", self.api_port)
         http = httplib2.Http()
         response, content = http.request(path, 'POST', headers=headers)
-        self.assertEqual(response.status, 400, content)
+        self.assertEqual(400, response.status, content)
 
-        expected = 'External sourcing not supported for store ' + copy_from
+        expected = 'External source are not supported: \'%s\'' % copy_from
         msg = 'expected "%s" in "%s"' % (expected, content)
         self.assertTrue(expected in content, msg)
 

@@ -45,7 +45,7 @@ def initiate_deletion(req, location, id, delayed_delete=False):
         glance.store.safe_delete_from_backend(req.context, location, id)
 
 
-def _kill(req, image_id):
+def _kill(req, image_id, from_state):
     """
     Marks the image status to `killed`.
 
@@ -53,10 +53,10 @@ def _kill(req, image_id):
     :param image_id: Opaque image identifier
     """
     registry.update_image_metadata(req.context, image_id,
-                                   {'status': 'killed'})
+                                   {'status': 'killed'}, from_state=from_state)
 
 
-def safe_kill(req, image_id):
+def safe_kill(req, image_id, from_state):
     """
     Mark image killed without raising exceptions if it fails.
 
@@ -67,7 +67,7 @@ def safe_kill(req, image_id):
     :param image_id: Opaque image identifier
     """
     try:
-        _kill(req, image_id)
+        _kill(req, image_id, from_state)
     except Exception:
         LOG.exception(_("Unable to kill image %(id)s: ") % {'id': image_id})
 
@@ -119,7 +119,7 @@ def upload_data_to_store(req, image_meta, image_data, store, notifier):
                                                    'supplied': supplied,
                                                    'actual': actual})
                 LOG.error(msg)
-                safe_kill(req, image_id)
+                safe_kill(req, image_id, 'saving')
                 initiate_deletion(req, location, image_id, CONF.delayed_delete)
                 raise webob.exc.HTTPBadRequest(explanation=msg,
                                                content_type="text/plain",
@@ -140,10 +140,18 @@ def upload_data_to_store(req, image_meta, image_data, store, notifier):
         update_data = {'checksum': checksum,
                        'size': size}
         try:
-            image_meta = registry.update_image_metadata(req.context,
-                                                        image_id,
-                                                        update_data)
-
+            try:
+                state = 'saving'
+                image_meta = registry.update_image_metadata(req.context,
+                                                            image_id,
+                                                            update_data,
+                                                            from_state=state)
+            except exception.Duplicate:
+                image = registry.get_image_metadata(req.context, image_id)
+                if image['status'] == 'deleted':
+                    raise exception.NotFound()
+                else:
+                    raise
         except exception.NotFound as e:
             msg = _("Image %s could not be found after upload. The image may "
                     "have been deleted during the upload.") % image_id
@@ -174,7 +182,7 @@ def upload_data_to_store(req, image_meta, image_data, store, notifier):
     except exception.Forbidden as e:
         msg = u"Forbidden upload attempt: %s" % e
         LOG.debug(msg)
-        safe_kill(req, image_id)
+        safe_kill(req, image_id, 'saving')
         notifier.error('image.upload', msg)
         raise webob.exc.HTTPForbidden(explanation=msg,
                                       request=req,
@@ -183,7 +191,7 @@ def upload_data_to_store(req, image_meta, image_data, store, notifier):
     except exception.StorageFull as e:
         msg = _("Image storage media is full: %s") % e
         LOG.error(msg)
-        safe_kill(req, image_id)
+        safe_kill(req, image_id, 'saving')
         notifier.error('image.upload', msg)
         raise webob.exc.HTTPRequestEntityTooLarge(explanation=msg,
                                                   request=req,
@@ -192,7 +200,7 @@ def upload_data_to_store(req, image_meta, image_data, store, notifier):
     except exception.StorageWriteDenied as e:
         msg = _("Insufficient permissions on image storage media: %s") % e
         LOG.error(msg)
-        safe_kill(req, image_id)
+        safe_kill(req, image_id, 'saving')
         notifier.error('image.upload', msg)
         raise webob.exc.HTTPServiceUnavailable(explanation=msg,
                                                request=req,
@@ -202,7 +210,7 @@ def upload_data_to_store(req, image_meta, image_data, store, notifier):
         msg = (_("Denying attempt to upload image larger than %d bytes.")
                % CONF.image_size_cap)
         LOG.info(msg)
-        safe_kill(req, image_id)
+        safe_kill(req, image_id, 'saving')
         notifier.error('image.upload', msg)
         raise webob.exc.HTTPRequestEntityTooLarge(explanation=msg,
                                                   request=req,
@@ -212,7 +220,7 @@ def upload_data_to_store(req, image_meta, image_data, store, notifier):
         msg = (_("Denying attempt to upload image because it exceeds the ."
                  "quota: %s") % e)
         LOG.info(msg)
-        safe_kill(req, image_id)
+        safe_kill(req, image_id, 'saving')
         notifier.error('image.upload', msg)
         raise webob.exc.HTTPRequestEntityTooLarge(explanation=msg,
                                                   request=req,
@@ -227,12 +235,12 @@ def upload_data_to_store(req, image_meta, image_data, store, notifier):
         notifier.error('image.upload', msg)
         with excutils.save_and_reraise_exception():
             LOG.exception(msg)
-            safe_kill(req, image_id)
+            safe_kill(req, image_id, 'saving')
 
     except (ValueError, IOError) as e:
         msg = _("Client disconnected before sending all data to backend")
         LOG.debug(msg)
-        safe_kill(req, image_id)
+        safe_kill(req, image_id, 'saving')
         raise webob.exc.HTTPBadRequest(explanation=msg,
                                        content_type="text/plain",
                                        request=req)
@@ -240,7 +248,7 @@ def upload_data_to_store(req, image_meta, image_data, store, notifier):
     except Exception as e:
         msg = _("Failed to upload image %s") % image_id
         LOG.exception(msg)
-        safe_kill(req, image_id)
+        safe_kill(req, image_id, 'saving')
         notifier.error('image.upload', msg)
         raise webob.exc.HTTPInternalServerError(explanation=msg,
                                                 request=req,

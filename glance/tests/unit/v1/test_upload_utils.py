@@ -69,10 +69,10 @@ class TestUploadUtils(base.StoreClearingUnitTest):
         id = unit_test_utils.UUID1
 
         self.mox.StubOutWithMock(registry, "update_image_metadata")
-        registry.update_image_metadata(req.context, id, {'status': 'killed'})
+        registry.update_image_metadata(req.context, id, {'status': 'killed'},'saving')
         self.mox.ReplayAll()
 
-        upload_utils.safe_kill(req, id)
+        upload_utils.safe_kill(req, id,'saving')
 
         self.mox.VerifyAll()
 
@@ -83,11 +83,11 @@ class TestUploadUtils(base.StoreClearingUnitTest):
         self.mox.StubOutWithMock(registry, "update_image_metadata")
         registry.update_image_metadata(req.context,
                                        id,
-                                       {'status': 'killed'}
+                                       {'status': 'killed'},'saving'
                                        ).AndRaise(Exception())
         self.mox.ReplayAll()
 
-        upload_utils.safe_kill(req, id)
+        upload_utils.safe_kill(req, id,'saving')
 
         self.mox.VerifyAll()
 
@@ -114,7 +114,7 @@ class TestUploadUtils(base.StoreClearingUnitTest):
                        'size': size}
         registry.update_image_metadata(
             req.context, image_meta['id'],
-            update_data).AndReturn(image_meta.update(update_data))
+            update_data, from_state='saving').AndReturn(image_meta.update(update_data))
         self.mox.ReplayAll()
 
         actual_meta, actual_loc, loc_meta = upload_utils.upload_data_to_store(
@@ -210,7 +210,7 @@ class TestUploadUtils(base.StoreClearingUnitTest):
             image_meta['size']).AndRaise(exc_class)
 
         self.mox.StubOutWithMock(upload_utils, "safe_kill")
-        upload_utils.safe_kill(req, image_meta['id'])
+        upload_utils.safe_kill(req, image_meta['id'],'saving')
         self.mox.ReplayAll()
 
         self.assertRaises(expected_class,
@@ -239,7 +239,7 @@ class TestUploadUtils(base.StoreClearingUnitTest):
 
         if image_killed:
             self.mox.StubOutWithMock(upload_utils, "safe_kill")
-            upload_utils.safe_kill(req, image_meta['id'])
+            upload_utils.safe_kill(req, image_meta['id'],'saving')
 
         notifier = self.mox.CreateMockAnything()
         notifier.error('image.upload', mox.IgnoreArg())
@@ -323,13 +323,13 @@ class TestUploadUtils(base.StoreClearingUnitTest):
                        'size': size}
         registry.update_image_metadata(req.context,
                                        image_meta['id'],
-                                       update_data
+                                       update_data, from_state='saving'
                                        ).AndRaise(exception.NotFound)
         self.mox.StubOutWithMock(upload_utils, "initiate_deletion")
         upload_utils.initiate_deletion(req, location, image_meta['id'],
                                        mox.IsA(bool))
         self.mox.StubOutWithMock(upload_utils, "safe_kill")
-        upload_utils.safe_kill(req, image_meta['id'])
+        upload_utils.safe_kill(req, image_meta['id'],'saving')
         notifier.error('image.upload', mox.IgnoreArg())
         self.mox.ReplayAll()
 

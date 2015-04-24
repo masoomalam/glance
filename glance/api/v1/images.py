@@ -574,7 +574,7 @@ class Controller(controller.BaseController):
             try:
                 req.get_content_type(('application/octet-stream',))
             except exception.InvalidContentType:
-                upload_utils.safe_kill(req, image_meta['id'])
+                upload_utils.safe_kill(req, image_meta['id'], 'saving')
                 msg = _("Content-Type must be application/octet-stream")
                 LOG.debug(msg)
                 raise HTTPBadRequest(explanation=msg)
